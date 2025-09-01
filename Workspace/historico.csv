@@ -1,0 +1,2 @@
+fecha,hora,origen,hum,temp,temp_clima,estado_dia
+31-08-2025,22:19:28,ESP32,51.1,23.3,8.5,True,False,False
