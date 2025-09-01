@@ -22,7 +22,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 bool estadoVentanaFinal = false;
 bool estadoVentiladorFinal = false;
 unsigned long tiempoAnterior = 0;
-const long intervalo = 200;
+const long intervalo = 20000;
 
 void setup() {
   Serial.begin(115200);

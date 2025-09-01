@@ -1,5 +1,15 @@
-# events.py
 from utils import crearCSV
 
 def inicioAPI():
-    crearCSV("historico.csv", ["fecha", "hora", "origen",  "hum", "temp", "temp_clima", "estado_dia"])
+    columnas = [
+        "fecha", 
+        "hora", 
+        "origen",  
+        "hum", 
+        "temp", 
+        "temp_clima",
+        "ventana",
+        "ventilador",
+        "estado_dia"
+    ]
+    crearCSV("historico.csv", columnas)

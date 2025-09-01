@@ -1,43 +1,40 @@
-# recibirDatos.py
-
-from fastapi import APIRouter
-from models.paqueteESP import paqueteESP, respuestaESP
+from fastapi import APIRouter, HTTPException
+from models.paqueteESP import paqueteESP
 from utils import obtenerFechaHora, insertarRegistroenCSV
 from routes.get import get_clima_santiago
+from RNA import results_RNA
 
 router = APIRouter()
 
 @router.post("/recepcion")
-def recepcion(dato : paqueteESP):
+def recepcion(dato: paqueteESP):
     fecha, hora = obtenerFechaHora()
     
-    # 1. Obtén los datos del clima
     try:
         data_clima = get_clima_santiago()
-        temp_clima = data_clima["temperatura"]
-        estado_dia = data_clima["estado_dia"]
+        temp_clima_externa = float(data_clima["temperatura"])
+        es_dia_modelo = 1 if data_clima["estado_dia"] == "True" else 0
+        estado_dia_bool = True if es_dia_modelo == 1 else False
     except Exception as e:
-        print(f"Error al obtener los datos del clima: {e}")
-        temp_clima = "N/A"
-        estado_dia = "N/A"
+        raise HTTPException(status_code=503, detail=f"Error al obtener datos del clima: {e}")
 
-    # 2. --- NUEVO: Añade los datos de los relés a la fila del CSV ---
-    # Los nuevos datos ya vienen en el objeto 'dato' gracias al modelo actualizado
+    prediccion_ventana, prediccion_ventilador = results_RNA(
+        temp_int=dato.temperatura,
+        temp_ext=temp_clima_externa,
+        hum=dato.humedad,
+        es_dia=es_dia_modelo
+    )
+
     filaCVS = [
-        fecha, 
-        hora, 
-        dato.origen, 
-        dato.humedad, 
-        dato.temperatura, 
-        temp_clima,
-        dato.ventana,     # <-- DATO AÑADIDO
-        dato.ventilador,  # <-- DATO AÑADIDO 
-        estado_dia
+        fecha, hora, dato.origen, dato.humedad, dato.temperatura, 
+        temp_clima_externa, dato.ventana, dato.ventilador, estado_dia_bool
     ]
-    # 3. Inserta el registro en el CSV (esta función no necesita cambios)
     insertarRegistroenCSV("historico.csv", filaCVS)
-    
-    respuesta = respuestaESP(recepcion="ok",
-                             fecha=fecha,
-                             hora=hora)
-    return respuesta
+
+    return {
+        "ventana_pred": prediccion_ventana,
+        "ventilador_pred": prediccion_ventilador,
+        "temp_externa": temp_clima_externa,
+        "es_dia": estado_dia_bool,
+        "hora_actual": hora
+    }
