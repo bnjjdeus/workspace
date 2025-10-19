@@ -1,0 +1,265 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <WiFi.h>
+#include <U8g2lib.h>
+#include "ArduinoJson.h"
+#include "HTTPClient.h"
+
+// ====================================================================
+// 1. CONFIGURACIÓN DE RED Y API
+// ====================================================================
+
+const char* ssid = "nashe";
+const char* password = "weonklxd";
+
+// CONFIGURACIÓN POST
+const char* urlAPI_recepcion = "http://10.128.62.180:8000/recepcion";
+const char* ID_DISPOSITIVO = "ESP32_GENERICO_01";     // ID ÚNICO para POST y GET
+const char* API_KEY_POST = "MI_KEY_SECRETA_POST_123";   
+
+// CONFIGURACIÓN GET
+const char* urlAPI_ultimos_10 = "http://10.128.62.180:8000/historico/ultimos10"; 
+const char* urlAPI_ultimo_dato = "http://10.128.62.180:8000/historico/ultimo";   
+const char* API_KEY_GET = "MI_KEY_SECRETA_GET_456";    
+
+// ====================================================================
+// 2. HARDWARE Y PINES
+// ====================================================================
+
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+
+// PINES DE SIMULACIÓN DE 3 SENSORES (2 Analógicos, 1 Digital - Punto 15)
+#define SENSOR_1_PIN 34 // Analógico (Parámetro P1)
+#define SENSOR_2_PIN 35 // Analógico (Parámetro P2)
+#define SENSOR_3_PIN 13 // Digital (Estado E1)
+
+// ACTUADORES DE CONTROL (GENERALES, no Ventana/Ventilador)
+#define ACTUADOR_A_PIN 26 // Salida de control A
+#define ACTUADOR_B_PIN 27 // Salida de control B
+
+// ====================================================================
+// 3. LÓGICA DE CONTROL
+// ====================================================================
+
+bool estadoActuadorA = false;
+bool estadoActuadorB = false;
+unsigned long tiempoAnterior = 0;
+const long intervalo = 10000; // POST cada 10 segundos
+
+// --------------------------------------------------------------------
+// FUNCIÓN DE CONEXIÓN WIFI (Sin cambios en la lógica, solo variables)
+// --------------------------------------------------------------------
+
+void checkWiFiConnection() {
+    // ... (CÓDIGO checkWiFiConnection - LÓGICA SIN CAMBIOS) ...
+    if (WiFi.status() == WL_CONNECTED) {
+        return;
+    }
+    Serial.println("Conexión WiFi perdida. Reconectando...");
+    
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 32, "Reconectando...");
+    u8g2.sendBuffer();
+
+    WiFi.begin(ssid, password);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nReconectado!");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 24, "Conectado!");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        u8g2.drawStr(0, 40, WiFi.localIP().toString().c_str());
+        u8g2.sendBuffer();
+        delay(2000);  
+    }
+}
+
+// --------------------------------------------------------------------
+// FUNCIONES GET HISTÓRICO (Cumplimiento total de Puntos 40, 41, 42)
+// --------------------------------------------------------------------
+
+void obtenerUltimoDatoHistorico() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  // Construcción de URL con parámetros: ID y API Key (Punto 41)
+  String url = String(urlAPI_ultimo_dato) + "?id=" + ID_DISPOSITIVO + "&api_key=" + API_KEY_GET;
+
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK) {
+    String response_payload = http.getString();
+    JsonDocument doc_recibir;
+    if (deserializeJson(doc_recibir, response_payload) == DeserializationError::Ok) {
+      // Procesa JSON con lista de lecturas y lista de horas (Punto 42)
+      if (doc_recibir["lecturas"].is<JsonArray>() && doc_recibir["lecturas"][0].size() >= 3) {
+         float s1 = doc_recibir["lecturas"][0][0].as<float>();
+         String hora = doc_recibir["horas"][0].as<String>();
+         Serial.printf(">> ULTIMO DATO (GET): S1: %.0f a las %s\n", s1, hora.c_str());
+      }
+    }
+  } else if (httpCode > 0) {
+     Serial.printf("[GET] Error al obtener último dato. Código HTTP: %d\n", httpCode);
+  }
+  
+  http.end();
+}
+
+void obtenerUltimos10DatosHistorico() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  // Construcción de URL con parámetros: ID y API Key (Punto 41)
+  String url = String(urlAPI_ultimos_10) + "?id=" + ID_DISPOSITIVO + "&api_key=" + API_KEY_GET;
+
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK) {
+    String response_payload = http.getString();
+    JsonDocument doc_recibir;
+    if (deserializeJson(doc_recibir, response_payload) == DeserializationError::Ok) {
+      // Procesa JSON con lista de lecturas y lista de horas (Punto 42)
+      JsonArray lecturas = doc_recibir["lecturas"].as<JsonArray>();
+      JsonArray horas = doc_recibir["horas"].as<JsonArray>();
+
+      Serial.println(">> RESUMEN HISTÓRICO (Últimas 10):");
+      for (size_t i = 0; i < lecturas.size(); i++) {
+        float s1 = lecturas[i][0].as<float>(); 
+        String hora = horas[i].as<String>();
+        Serial.printf("   %d) S1: %.0f - Hora: %s\n", i + 1, s1, hora.c_str());
+      }
+    }
+  } else if (httpCode > 0) {
+     Serial.printf("[GET] Error al obtener 10 datos. Código HTTP: %d\n", httpCode);
+  }
+  
+  http.end();
+}
+
+// --------------------------------------------------------------------
+// SETUP Y LOOP
+// --------------------------------------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  u8g2.begin();
+
+  // Configurar pines de simulación y control
+  pinMode(SENSOR_3_PIN, INPUT_PULLUP);
+  pinMode(ACTUADOR_A_PIN, OUTPUT);
+  pinMode(ACTUADOR_B_PIN, OUTPUT);
+  digitalWrite(ACTUADOR_A_PIN, LOW);
+  digitalWrite(ACTUADOR_B_PIN, LOW);
+  
+  WiFi.begin(ssid, password);
+}
+
+void loop() {
+  checkWiFiConnection();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    unsigned long tiempoActual = millis();
+    if (tiempoActual - tiempoAnterior >= intervalo) {
+      tiempoAnterior = tiempoActual;
+
+      // ----------------------------------------------------
+      // LECTURA/SIMULACIÓN DE LOS 3 SENSORES 
+      // ----------------------------------------------------
+      float sensor1_valor = (float)analogRead(SENSOR_1_PIN); // P1 Analógico
+      float sensor2_valor = (float)analogRead(SENSOR_2_PIN); // P2 Analógico
+      bool sensor3_estado = digitalRead(SENSOR_3_PIN);       // E1 Digital
+      
+      // ----------------------------------------------------
+      // CONSTRUCCIÓN DEL JSON POST Y ENVÍO
+      // ----------------------------------------------------
+      HTTPClient http;
+      JsonDocument doc_enviar;
+      
+      // Paquete con los 3 sensores y el identificador (Punto 27)
+      doc_enviar["id"] = ID_DISPOSITIVO;
+      doc_enviar["parametro_1"] = sensor1_valor; // Cambio a nombre genérico
+      doc_enviar["parametro_2"] = sensor2_valor;
+      doc_enviar["estado_1"] = sensor3_estado; 
+      
+      // Estado de los actuadores
+      doc_enviar["actuador_a"] = estadoActuadorA;
+      doc_enviar["actuador_b"] = estadoActuadorB;
+      String json_payload;
+      serializeJson(doc_enviar, json_payload);
+      
+      Serial.println("[POST] Enviando datos: " + json_payload); 
+
+      http.begin(urlAPI_recepcion);
+      http.addHeader("Content-Type", "application/json");
+      // AGREGANDO LA API KEY EN CABECERA (Punto 28/29)
+      http.addHeader("X-API-Key", API_KEY_POST); 
+      
+      int httpCode = http.POST(json_payload);
+
+      if (httpCode > 0) {
+        Serial.printf("[POST] Respuesta del servidor. Código: %d\n", httpCode);
+        if (httpCode == HTTP_CODE_OK) {
+           String response_payload = http.getString();
+           JsonDocument doc_recibir;
+           deserializeJson(doc_recibir, response_payload);
+           
+           // Valores genéricos recibidos del servidor
+           float P1_interior = sensor1_valor; 
+           bool prediccion_A = doc_recibir["prediccion_A"];
+           bool prediccion_B = doc_recibir["prediccion_B"];
+           float P1_referencia = doc_recibir["P1_referencia"].as<float>(); 
+           bool modo_diurno = doc_recibir["modo_diurno"];
+           
+           // Lógica de control genérica basada en P1
+           estadoActuadorA = (P1_interior > 3000) && (prediccion_A == true);
+           estadoActuadorB = (P1_interior > 3500) && (prediccion_B == true);
+           
+           digitalWrite(ACTUADOR_A_PIN, estadoActuadorA);
+           digitalWrite(ACTUADOR_B_PIN, estadoActuadorB);
+
+           // Actualización de Display
+           u8g2.clearBuffer();
+           u8g2.setFont(u8g2_font_5x8_tf);
+           u8g2.setCursor(0, 8); u8g2.print("P1 Int: "); u8g2.print(P1_interior, 0); 
+           u8g2.setCursor(0, 18); u8g2.print("P2 Int: "); u8g2.print(sensor2_valor, 0);
+           u8g2.setCursor(0, 28); u8g2.print("E1: "); u8g2.print(sensor3_estado ? "HIGH" : "LOW");
+           u8g2.setCursor(0, 38); u8g2.print("P1 Ref: "); u8g2.print(P1_referencia, 0); u8g2.print(" | "); u8g2.print(modo_diurno ? "Diurno" : "Nocturno");
+           u8g2.setCursor(0, 48); u8g2.print("Actuador A: "); u8g2.print(estadoActuadorA ? "ON" : "OFF");
+           u8g2.setCursor(0, 58); u8g2.print("Actuador B: "); u8g2.print(estadoActuadorB ? "ON" : "OFF");
+           u8g2.sendBuffer();
+        } else {
+          u8g2.clearBuffer();
+          u8g2.setFont(u8g2_font_ncenB08_tr);
+          u8g2.drawStr(0, 24, "Error API POST");
+          u8g2.setFont(u8g2_font_6x10_tf);
+          u8g2.setCursor(0, 40); u8g2.print("Codigo: "); u8g2.print(httpCode);
+          u8g2.sendBuffer();
+        }
+      } else {
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 24, "Error POST");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        u8g2.drawStr(0, 40, "Sin conexion al servidor");
+        u8g2.sendBuffer();
+      }
+      http.end();
+      
+      // LLAMADAS GET PARA EL HISTÓRICO (Punto 40, 41, 42)
+      obtenerUltimoDatoHistorico();
+      delay(500); 
+      obtenerUltimos10DatosHistorico();
+    }
+  }
+}
